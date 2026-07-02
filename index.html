@@ -10,6 +10,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script src="https://unpkg.com/docx@9.6.1/dist/index.iife.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:#0d1117;color:#e6e6e6;font-size:13px;min-height:100vh}
@@ -1125,15 +1126,46 @@ function App(){
     });
 
     try{
-      const blob = await Packer.toBlob(doc);
-      const fname=`EnergyBae_Proposal_${(inp.customerName||'Customer').replace(/[^a-zA-Z0-9]/g,'_')}_${B1}kW.docx`;
-      const url = URL.createObjectURL(blob);
+      const rawBlob = await Packer.toBlob(doc);
+
+      // Convert Blob → ArrayBuffer via FileReader (browser-safe, no Node APIs)
+      const arrayBuf = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsArrayBuffer(rawBlob);
+      });
+
+      // Strip Word 2010+ namespaces so Word 2007 can open the file
+      const NS = ['wpc','cx','cx1','cx2','cx3','cx4','cx5','cx6','cx7','cx8',
+                  'w14','w15','w16cid','w16se','wp14','wpg','wpi','wps'];
+      const zip = await JSZip.loadAsync(arrayBuf);
+      const xmlNames = Object.keys(zip.files).filter(n => n.endsWith('.xml'));
+      await Promise.all(xmlNames.map(async name => {
+        let content = await zip.files[name].async('string');
+        let cleaned = content;
+        for (const ns of NS) {
+          cleaned = cleaned.replace(new RegExp(`\\s+xmlns:${ns}="[^"]*"`, 'g'), '');
+          cleaned = cleaned.replace(new RegExp(`\\s+${ns}:[a-zA-Z0-9_.\\-]+="[^"]*"`, 'g'), '');
+        }
+        cleaned = cleaned.replace(/\s+mc:Ignorable="[^"]*"/g, '');
+        if (name.includes('settings.xml'))
+          cleaned = cleaned.replace(/w:val="15"/g, 'w:val="12"');
+        if (cleaned !== content) zip.file(name, cleaned);
+      }));
+
+      // uint8array works in all browsers (unlike arraybuffer which needs nodebuffer)
+      const uint8 = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+      const finalBlob = new Blob([uint8], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      });
+
+      const fname = `EnergyBae_Proposal_${(inp.customerName||'Customer').replace(/[^a-zA-Z0-9]/g,'_')}_${B1}kW.docx`;
+      const url = URL.createObjectURL(finalBlob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = fname;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(()=>{ URL.revokeObjectURL(url); document.body.removeChild(a); }, 1000);
+      a.href = url; a.download = fname;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); document.body.removeChild(a); }, 1000);
     }catch(e){
       alert('Error generating proposal: '+e.message);
       console.error(e);
