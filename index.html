@@ -1126,13 +1126,14 @@ function App(){
     });
 
     try{
-      const buf = await Packer.toBuffer(doc);
+      // Packer.toBlob works in browsers; toBuffer is Node-only
+      const rawBlob = await Packer.toBlob(doc);
 
       // ── Strip Word 2010+ namespaces for Word 2007 compatibility ──
-      async function makeWord2007Compatible(arrayBuf){
+      async function makeWord2007Compatible(inputBlob){
         const NS_TO_STRIP=['wpc','cx','cx1','cx2','cx3','cx4','cx5','cx6','cx7','cx8',
           'w14','w15','w16cid','w16se','wp14','wpg','wpi','wps'];
-        const zip = await JSZip.loadAsync(arrayBuf);
+        const zip = await JSZip.loadAsync(inputBlob);
         const xmlFiles = Object.keys(zip.files).filter(n=>n.endsWith('.xml'));
         await Promise.all(xmlFiles.map(async name=>{
           const content = await zip.files[name].async('string');
@@ -1151,13 +1152,13 @@ function App(){
           }
           if(cleaned!==content) zip.file(name,cleaned);
         }));
-        return await zip.generateAsync({type:'arraybuffer',compression:'DEFLATE'});
+        // Use 'blob' type for browser compatibility (not 'arraybuffer' which needs nodebuffer)
+        return await zip.generateAsync({type:'blob',compression:'DEFLATE',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
       }
 
-      const cleanedBuf = await makeWord2007Compatible(buf);
-      const blob = new Blob([cleanedBuf],{type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
+      const cleanedBlob = await makeWord2007Compatible(rawBlob);
       const fname=`EnergyBae_Proposal_${(inp.customerName||'Customer').replace(/[^a-zA-Z0-9]/g,'_')}_${B1}kW.docx`;
-      saveAs(blob, fname);
+      saveAs(cleanedBlob, fname);
     }catch(e){
       alert('Error generating proposal: '+e.message);
       console.error(e);
